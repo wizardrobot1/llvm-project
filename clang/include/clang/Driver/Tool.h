@@ -65,6 +65,10 @@ public:
   /// writing to \p Output and with \p Inputs, and add the jobs to
   /// \p C.
   ///
+  /// 这个函数会被派生的工具链重写，用来进行每个工具链特殊的工作构建，
+  /// 具体来说，就是生成一个包含工具所能识别参数的命令行
+  /// 存放到C.Jobs里面
+  ///
   /// \param TCArgs - The argument list for this toolchain, with any
   /// tool chain specific translations applied.
   /// \param LinkingOutput - If this output will eventually feed the

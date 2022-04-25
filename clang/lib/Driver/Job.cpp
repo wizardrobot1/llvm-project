@@ -314,22 +314,28 @@ int Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
   PrintFileNames();
 
   SmallVector<const char *, 128> Argv;
+  // 不使用Response File ，直接传递参数
   if (ResponseFile == nullptr) {
     Argv.push_back(Executable);
     Argv.append(Arguments.begin(), Arguments.end());
     Argv.push_back(nullptr);
   } else {
     // If the command is too large, we need to put arguments in a response file.
+    // 需要写到Response File 里面的内容
     std::string RespContents;
+    // 通过流的方式填写RespContents
     llvm::raw_string_ostream SS(RespContents);
 
     // Write file contents and build the Argv vector
+    // 填写RespContents
     writeResponseFile(SS);
+    // 有的参数不填写入RespContents，使用参数传入
     buildArgvForResponseFile(Argv);
     Argv.push_back(nullptr);
     SS.flush();
 
     // Save the response file in the appropriate encoding
+    // 把字符串的内容写入到文件中，考虑编码
     if (std::error_code EC = writeFileWithEncoding(
             ResponseFile, RespContents, ResponseSupport.ResponseEncoding)) {
       if (ErrMsg)
@@ -352,6 +358,7 @@ int Command::Execute(ArrayRef<llvm::Optional<StringRef>> Redirects,
   }
 
   auto Args = llvm::toStringRefArray(Argv.data());
+  // 调用llvm提供的函数，根据提供参数执行相关程序，这里不深入阅读llvm的代码
   return llvm::sys::ExecuteAndWait(Executable, Args, Env, Redirects,
                                    /*secondsToWait*/ 0, /*memoryLimit*/ 0,
                                    ErrMsg, ExecutionFailed, &ProcStat);

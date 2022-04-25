@@ -309,6 +309,12 @@ types::ID types::lookupTypeForTypeSpecifier(const char *Name) {
   return TY_INVALID;
 }
 
+/**
+ * @brief 获取某个文件类型参与到的LastPhase之前的编译阶段
+ * @param Id 
+ * @param LastPhase 
+ * @return llvm::SmallVector<phases::ID, phases::MaxNumberOfPhases> 
+ */
 llvm::SmallVector<phases::ID, phases::MaxNumberOfPhases>
 types::getCompilationPhases(ID Id, phases::ID LastPhase) {
   llvm::SmallVector<phases::ID, phases::MaxNumberOfPhases> P;
@@ -320,6 +326,13 @@ types::getCompilationPhases(ID Id, phases::ID LastPhase) {
   return P;
 }
 
+/**
+ * @brief 获取当前命令行的所有编译阶段
+ * @param Driver 
+ * @param DAL 
+ * @param Id 
+ * @return llvm::SmallVector<phases::ID, phases::MaxNumberOfPhases> 
+ */
 llvm::SmallVector<phases::ID, phases::MaxNumberOfPhases>
 types::getCompilationPhases(const clang::driver::Driver &Driver,
                             llvm::opt::DerivedArgList &DAL, ID Id) {

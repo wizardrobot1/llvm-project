@@ -527,11 +527,16 @@ bool ToolChain::needsGCovInstrumentation(const llvm::opt::ArgList &Args) {
 }
 
 Tool *ToolChain::SelectTool(const JobAction &JA) const {
+  // 使用Flag
   if (D.IsFlangMode() && getDriver().ShouldUseFlangCompiler(JA)) return getFlang();
+  // 使用Clang
   if (getDriver().ShouldUseClangCompiler(JA)) return getClang();
+  // 使用ClangAs
   Action::ActionClass AC = JA.getKind();
   if (AC == Action::AssembleJobClass && useIntegratedAs())
     return getClangAs();
+  // 其他情况转发getTool,根据JobAction种类选择Tool
+  // 调用的getTool和this指针有关，因为ToolChain的派生类对getTool进行了重写
   return getTool(AC);
 }
 

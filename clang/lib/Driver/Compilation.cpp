@@ -163,6 +163,7 @@ bool Compilation::CleanupFileMap(const ArgStringMap &Files,
 
 int Compilation::ExecuteCommand(const Command &C,
                                 const Command *&FailingCommand) const {
+  // 把选项打印到文件中（eg. -v）
   if ((getDriver().CCPrintOptions ||
        getArgs().hasArg(options::OPT_v)) && !getDriver().CCGenDiagnostics) {
     raw_ostream *OS = &llvm::errs();
@@ -242,6 +243,10 @@ void Compilation::ExecuteJobs(const JobList &Jobs,
   // inputs on the command line even one of them failed.
   // In all but CLMode, execute all the jobs unless the necessary inputs for the
   // job is missing due to previous failures.
+
+  // 师爷翻译：
+  // 根据Unix的标准，即使某个输入编译错误了 driver 也需要继续编译剩下的输入
+  // 非CLMode下 ， 需要执行所有的工作除非某个工作的所需输入由于之前的错误缺失了
   for (const auto &Job : Jobs) {
     if (!InputsOk(Job, FailingCommands))
       continue;

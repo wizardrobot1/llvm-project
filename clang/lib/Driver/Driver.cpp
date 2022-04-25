@@ -190,8 +190,18 @@ InputArgList Driver::ParseArgStrings(ArrayRef<const char *> ArgStrings,
   llvm::PrettyStackTraceString CrashInfo("Command line argument parsing");
   ContainsError = false;
 
+  // 由于Driver 支持 clang、gcc、cl、flang等不同编译器，
+  // 所以参数选项会有很多，但是某一次编译中并不会用到所有的选项
+  // 比如使用clang启动Driver的时候，不能识别/TP、-Yc 这种cl特有的参数
+  // 这里就使用掩码来过滤不能使用的选项
+
+
+  // 可以包含的参数的掩码
   unsigned IncludedFlagsBitmask;
+  // 不可以包含的参数的掩码
   unsigned ExcludedFlagsBitmask;
+
+  // 如果不是MSVC兼容模式的话，就不能使用MSVC特有的选项比如/TP
   std::tie(IncludedFlagsBitmask, ExcludedFlagsBitmask) =
       getIncludeExcludeOptionFlagMasks(IsClCompatMode);
 
@@ -1014,7 +1024,9 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
   // We look for the driver mode option early, because the mode can affect
   // how other options are parsed.
 
+  // 根据可执行程序的路径判断Driver的工作模式(gcc\c++\cl(MSVC)\flang(Fortran))
   auto DriverMode = getDriverMode(ClangExecutable, ArgList.slice(1));
+  // 也可以由参数来指定Driver的工作模式
   if (!DriverMode.empty())
     setDriverMode(DriverMode);
 
@@ -1022,15 +1034,19 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
 
   // Arguments specified in command line.
   bool ContainsError;
+
+  // 把 /clang(命令行中) 的参数Parse成InputArgList以方便查询，存放到CLOptions
   CLOptions = std::make_unique<InputArgList>(
       ParseArgStrings(ArgList.slice(1), IsCLMode(), ContainsError));
 
   // Try parsing configuration file.
+  // 如果 /clang 参数Parse成功，从Config文件中载入参数并Parse，存放到CfgOptions
   if (!ContainsError)
     ContainsError = loadConfigFile();
   bool HasConfigFile = !ContainsError && (CfgOptions.get() != nullptr);
 
   // All arguments, from both config file and command line.
+  // Args 需要同时保存/clang中参数和Cfg中的参数，先转移Cfg中的参数(如果有Cfg)
   InputArgList Args = std::move(HasConfigFile ? std::move(*CfgOptions)
                                               : std::move(*CLOptions));
 
@@ -1049,15 +1065,19 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
     Args.append(Copy);
   };
 
+  // 如果刚才转移的是Cfg中的参数，现在还要转移/clang中的参数
   if (HasConfigFile)
     for (auto *Opt : *CLOptions) {
       if (Opt->getOption().matches(options::OPT_config))
         continue;
       const Arg *BaseArg = &Opt->getBaseArg();
+      // Doubt: CLOptions中的参数都是没有经过Translate的，怎么会有BaseArg？
       if (BaseArg == Opt)
         BaseArg = nullptr;
       appendOneArg(Opt, BaseArg);
     }
+
+  // 至此，已经把/clang 和 cfg 中的参数都存放到Args里面了
 
   // In CL mode, look for any pass-through arguments
   if (IsCLMode() && !ContainsError) {
@@ -1134,14 +1154,18 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
     T.setObjectFormat(llvm::Triple::COFF);
     TargetTriple = T.str();
   }
+  // 获取最后一个设置TargetTriple的参数，因为多次设置只取最后一个
   if (const Arg *A = Args.getLastArg(options::OPT_target))
     TargetTriple = A->getValue();
+  // 获取最后一个设置InstallDir的参数，因为多次设置只取最后一个
   if (const Arg *A = Args.getLastArg(options::OPT_ccc_install_dir))
     Dir = InstalledDir = A->getValue();
+  // 可以有多个设置BinarySearchDir的参数，所以使用filtered获取所有的搜索路径并存储
   for (const Arg *A : Args.filtered(options::OPT_B)) {
     A->claim();
     PrefixDirs.push_back(A->getValue(0));
   }
+  // 如果有环境变量叫做COMPILER_PATH也需要Split后加入到搜索路径里
   if (Optional<std::string> CompilerPathValue =
           llvm::sys::Process::GetEnv("COMPILER_PATH")) {
     StringRef CompilerPath = *CompilerPathValue;
@@ -1152,14 +1176,18 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
       CompilerPath = Split.second;
     }
   }
+  // 设置 sysroot
   if (const Arg *A = Args.getLastArg(options::OPT__sysroot_EQ))
     SysRoot = A->getValue();
+  // 设置 Dynamic loader prefix
   if (const Arg *A = Args.getLastArg(options::OPT__dyld_prefix_EQ))
     DyldPrefix = A->getValue();
 
+  // 设置 compiler resource directory
   if (const Arg *A = Args.getLastArg(options::OPT_resource_dir))
     ResourceDir = A->getValue();
 
+  // 设置 保存临时编译结果的模式
   if (const Arg *A = Args.getLastArg(options::OPT_save_temps_EQ)) {
     SaveTemps = llvm::StringSwitch<SaveTempsMode>(A->getValue())
                     .Case("cwd", SaveTempsCwd)
@@ -1167,6 +1195,7 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
                     .Default(SaveTempsCwd);
   }
 
+  // 设置链接时优化(Link Time Optimization) 相关参数
   setLTOMode(Args);
 
   // Process -fembed-bitcode= flags.
@@ -1185,13 +1214,20 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
       BitcodeEmbed = static_cast<BitcodeEmbedMode>(Model);
   }
 
+  // 至此，Driver-Parse 阶段算是结束了，
+  // Driver需要的一些常用Option也从Args中提取出单独存储 方便查询
+  // 把 Args 转交给 UArgs 标志新的阶段开始了
   std::unique_ptr<llvm::opt::InputArgList> UArgs =
       std::make_unique<InputArgList>(std::move(Args));
 
   // Perform the default argument translations.
+  // 执行一些默认参数的翻译，比如-Wl, -Xlinker  后面接的参数，
+  // 通过这些参数构造新的参数存放在TranslatedArgs里
   DerivedArgList *TranslatedArgs = TranslateInputArgs(*UArgs);
 
   // Owned by the host.
+  // 针对TargetTriple选择DefaultToolChain ，
+  // 这里不考虑 -arch 这种参数带来的多平台编译
   const ToolChain &TC = getToolChain(
       *UArgs, computeTargetTriple(*this, TargetTriple, *UArgs));
 
@@ -1199,18 +1235,37 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
   Compilation *C = new Compilation(*this, TC, UArgs.release(), TranslatedArgs,
                                    ContainsError);
 
+  // 处理那些需要立即处理的参数，比如--help这种要打印信息的参数
   if (!HandleImmediateArgs(*C))
     return C;
 
   // Construct the list of inputs.
+
+  // 用来保存某个输入文件的类型 <TypeID,Arg*>
   InputList Inputs;
+  // 确认输入文件的类型，可能是通过后缀名推断，也可以通过-x、/TP、/TC等手段强行指定
   BuildInputs(C->getDefaultToolChain(), *TranslatedArgs, Inputs);
 
   // Populate the tool chains for the offloading devices, if any.
+  // 针对CUDA/HIP等GPU编程的工具链设置，不太懂
   CreateOffloadingDeviceToolChains(*C, Inputs);
 
   // Construct the list of abstract actions to perform for this compilation. On
   // MachO targets this uses the driver-driver and universal actions.
+  // 为了计算需要进行的步骤，进行单个JobAction的构建（根据输入的参数和输入的文件类型计算），
+  // 并且利用这些JobAction的前后顺序建立Action Pipeline。
+
+  // 一个Action Pipeline结构可能是这样的（对象构建顺序由下到上）:
+  // Action:LinkJobAction
+  // Action->getInputs()[0]:AssembleJobAction
+  // Action->getInputs()[0]->getInputs()[0]:BackendJobAction
+  // Action->getInputs()[0]->getInputs()[0]->getInputs()[0]:CompileJobAction
+  // Action->getInputs()[0]->getInputs()[0]->getInputs()[0]->getInputs()[0]:PreprocessJobAction
+  // Action->getInputs()[0]->getInputs()[0]->getInputs()[0]->getInputs()[0]->getInputs()[0]:InputAction
+
+  // BuildUniveralActions 和 BuildActions 相比，会对每个Action Pipeline进行BindArchAction,
+  // 并使用这些BindArchAction构建LIPO
+  // 一个Action Pipeline->多个BindArchAction->一个LipoJobAction
   if (TC.getTriple().isOSBinFormatMachO())
     BuildUniversalActions(*C, C->getDefaultToolChain(), Inputs);
   else
@@ -1221,6 +1276,10 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
     return C;
   }
 
+  // 一个Action Pipeline 中的每个JobAction可以使用单独的程序执行,
+  // 但是最好是可以把多个JobAction交给一个程序执行，
+  // 这样就不需要把中间JobAction的Output序列化并保存到磁盘上,只要保存最后一个JobAction的Output.
+  // BuildJobs 会进行JobAction的合并, 并且生成cmd，保存到C.Jobs
   BuildJobs(*C);
 
   return C;
@@ -2055,6 +2114,8 @@ void Driver::BuildUniversalActions(Compilation &C, const ToolChain &TC,
   llvm::PrettyStackTraceString CrashInfo("Building universal build actions");
   // Collect the list of architectures. Duplicates are allowed, but should only
   // be handled once (in the order seen).
+
+  // 收集 -arch 的参数
   llvm::StringSet<> ArchNames;
   SmallVector<const char *, 4> Archs;
   for (Arg *A : Args) {
@@ -2076,9 +2137,11 @@ void Driver::BuildUniversalActions(Compilation &C, const ToolChain &TC,
 
   // When there is no explicit arch for this platform, make sure we still bind
   // the architecture (to the default) so that -Xarch_ is handled correctly.
+  // 如果没有指定Arch，使用ToolChain对应的Arch
   if (!Archs.size())
     Archs.push_back(Args.MakeArgString(TC.getDefaultUniversalArchName()));
 
+  // SingleActions保存BuildActions构建的那些Action Pipeline
   ActionList SingleActions;
   BuildActions(C, Args, BAInputs, SingleActions);
 
@@ -2095,12 +2158,15 @@ void Driver::BuildUniversalActions(Compilation &C, const ToolChain &TC,
       Diag(clang::diag::err_drv_invalid_output_with_multiple_archs)
           << types::getTypeName(Act->getType());
 
+    // 对于每个SingleAction，每个指定Arch都需要构建BindArchAction
     ActionList Inputs;
     for (unsigned i = 0, e = Archs.size(); i != e; ++i)
       Inputs.push_back(C.MakeAction<BindArchAction>(Act, Archs[i]));
 
     // Lipo if necessary, we do it this way because we need to set the arch flag
     // so that -Xarch_ gets overwritten.
+    // 如果只指定了一个Arch或者 这个SingleAction没有输出（？？），我们不需要LIPO，
+    // 否则，使用这些BindArchAction构建LipoJobAction
     if (Inputs.size() == 1 || Act->getType() == types::TY_Nothing)
       Actions.append(Inputs.begin(), Inputs.end());
     else
@@ -2188,13 +2254,35 @@ bool Driver::DiagnoseInputExistence(const DerivedArgList &Args, StringRef Value,
 void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
                          InputList &Inputs) const {
   const llvm::opt::OptTable &Opts = getOpts();
+  // 编译器在判断命令行中文件的类型时不一定根据其后缀名来判断：
+  // 我们可用通过-x参数来指定之后的输入文件看作某种类型文件来处理
+  // MSVC中，我们可以通过/Tc、/Tp来指定 紧接在选项后的一个文件 是C文件、C++文件
+  // MSVC中，我们可以通过/TC、/TP来指定 所有的文件强行指定为 是C文件、C++文件，
+  // (除非通过（/Tc、/Tp）另外指定了)；另外如果文件原类型是obj类型，我们不能强行指定
+
+  /*
+   *eg. 
+   *
+   * `CL MAIN.C /TcTEST.PRG /TcCOLLATE.PRG PRINT.PRG ` 中
+   *  MAIN.C、TEST.PRG、COLLATE.PRG被认为是C文件，PRINT.PRG为不可识别文件
+   * 
+   *  `CL TEST1.C TEST2.CXX TEST3.HUH TEST4.O /Tc TEST5.Z /TP` 中
+   * TEST1.C、TEST2.CXX、TEST3.HUH被认为是C++文件，TEST4.O 为 obj文件 ， TEST5.Z为C文件
+
+  */
+
   // Track the current user specified (-x) input. We also explicitly track the
   // argument used to set the type; we only want to claim the type when we
   // actually use it, so we warn about unused -x arguments.
+  // -x 参数可以指定之后的输入文件看作某种文件来处理
+
+  // 强行指定的文件类型，初始为TY_NOTHING,我们之后可以通过/TC、/TP、-x来改变
   types::ID InputType = types::TY_Nothing;
+  // 保存是哪个参数改变了InputType，如果有文件被InputType指定了类型，我们认为这个参数起到了作用，就Claim之
   Arg *InputTypeArg = nullptr;
 
   // The last /TC or /TP option sets the input type to C or C++ globally.
+  // 与 -x 不同 ， /TC 和 /TP 是全局指定文件类型，所以不能多次使用
   if (Arg *TCTP = Args.getLastArgNoClaim(options::OPT__SLASH_TC,
                                          options::OPT__SLASH_TP)) {
     InputTypeArg = TCTP;
@@ -2206,6 +2294,8 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
     bool ShowNote = false;
     for (Arg *A :
          Args.filtered(options::OPT__SLASH_TC, options::OPT__SLASH_TP)) {
+      // 如果是第二次出现 /TC或/TP ，报错
+      // 不过我觉得如果两次如果都是/TC的话不报错也没问题
       if (Previous) {
         Diag(clang::diag::warn_drv_overriding_flag_option)
           << Previous->getSpelling() << A->getSpelling();
@@ -2217,21 +2307,25 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
       Diag(clang::diag::note_drv_t_option_is_global);
 
     // No driver mode exposes -x and /TC or /TP; we don't support mixing them.
+    // /TP或/TC 也 不能和 -x 混合使用
     assert(!Args.hasArg(options::OPT_x) && "-x and /TC or /TP is not allowed");
   }
 
   for (Arg *A : Args) {
+    // 如果当前的输入类型是InputClass
     if (A->getOption().getKind() == Option::InputClass) {
       const char *Value = A->getValue();
       types::ID Ty = types::TY_INVALID;
 
       // Infer the input type if necessary.
+      // 如果没有使用选项强行指定过文件类型，那我们需要进行类型推断
       if (InputType == types::TY_Nothing) {
         // If there was an explicit arg for this, claim it.
         if (InputTypeArg)
           InputTypeArg->claim();
 
         // stdin must be handled specially.
+        // 处理stdin,没懂
         if (memcmp(Value, "-", 2) == 0) {
           if (IsFlangMode()) {
             Ty = types::TY_Fortran;
@@ -2253,6 +2347,13 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
           // clang-cl /E, or Object otherwise.
           // We use a host hook here because Darwin at least has its own
           // idea of what .s is.
+
+          // 师爷来翻译一下：
+          // 根据文件的后缀名来推断
+          // 不行的话就根据调用程序来判断类型
+          // C 预处理器 -> C
+          // clang-cl /E -> C++
+          // 其他 -> obj
           if (const char *Ext = strrchr(Value, '.'))
             Ty = TC.LookupTypeForExtension(Ext + 1);
 
@@ -2288,6 +2389,8 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
         // source file.
         //
         // FIXME: Clean this up if we move the phase sequence into the type.
+
+        // -ObjC and -ObjC++  会覆盖所有的类型指定
         if (Ty != types::TY_Object) {
           if (Args.hasArg(options::OPT_ObjC))
             Ty = types::TY_ObjC;
@@ -2295,10 +2398,12 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
             Ty = types::TY_ObjCXX;
         }
       } else {
+        // 我们通过/TC、/TP、-x 强行指定过文件类型
         assert(InputTypeArg && "InputType set w/o InputTypeArg");
         if (!InputTypeArg->getOption().matches(options::OPT_x)) {
           // If emulating cl.exe, make sure that /TC and /TP don't affect input
           // object files.
+          // 如果是使用/TC、/TP来指定的，它们不能影响obj文件类型的判定
           const char *Ext = strrchr(Value, '.');
           if (Ext && TC.LookupTypeForExtension(Ext + 1) == types::TY_Object)
             Ty = types::TY_Object;
@@ -3546,6 +3651,8 @@ void Driver::handleArguments(Compilation &C, DerivedArgList &Args,
                              ActionList &Actions) const {
 
   // Ignore /Yc/Yu if both /Yc and /Yu passed but with different filenames.
+  // MSVC中，/Yc用于指定输出的预处理文件*.pch,/Yu用于指定使用的预处理文件*.pch
+  // 如果在一行命令中通过/Yc、/Yu传入的文件名不同，报错
   Arg *YcArg = Args.getLastArg(options::OPT__SLASH_Yc);
   Arg *YuArg = Args.getLastArg(options::OPT__SLASH_Yu);
   if (YcArg && YuArg && strcmp(YcArg->getValue(), YuArg->getValue()) != 0) {
@@ -3554,15 +3661,18 @@ void Driver::handleArguments(Compilation &C, DerivedArgList &Args,
     Args.eraseArg(options::OPT__SLASH_Yu);
     YcArg = YuArg = nullptr;
   }
+  // 如果使用/Yc指定生成某个预处理文件，但是输入的文件数量大于1，不能生成一个预处理文件，报错
   if (YcArg && Inputs.size() > 1) {
     Diag(clang::diag::warn_drv_yc_multiple_inputs_clang_cl);
     Args.eraseArg(options::OPT__SLASH_Yc);
     YcArg = nullptr;
   }
 
+  // 查看编译到哪一步，比如'-E','-S','-c'等等
   Arg *FinalPhaseArg;
   phases::ID FinalPhase = getFinalPhase(Args, &FinalPhaseArg);
 
+  // 如果编译的最终阶段是链接，有一些选项不能使用
   if (FinalPhase == phases::Link) {
     if (Args.hasArg(options::OPT_emit_llvm))
       Diag(clang::diag::err_drv_emit_llvm_link);
@@ -3572,6 +3682,7 @@ void Driver::handleArguments(Compilation &C, DerivedArgList &Args,
       Diag(clang::diag::err_drv_lto_without_lld);
   }
 
+  // 如果编译的最终阶段是预处理，或者使用了/Y- 选项，有一些选项无效化
   if (FinalPhase == phases::Preprocess || Args.hasArg(options::OPT__SLASH_Y_)) {
     // If only preprocessing or /Y- is used, all pch handling is disabled.
     // Rather than check for it everywhere, just remove clang-cl pch-related
@@ -3583,15 +3694,22 @@ void Driver::handleArguments(Compilation &C, DerivedArgList &Args,
   }
 
   unsigned LastPLSize = 0;
+  // 对于每个输入文件
   for (auto &I : Inputs) {
+    // 输入文件的类型
     types::ID InputType = I.first;
+    // 引入该文件的参数
     const Arg *InputArg = I.second;
 
+    // 根据文件的类型 确定 这个文件可以使用在哪些阶段。
+    // 比如 .c++ 文件 ， 可以使用在预处理、编译、后端、汇编、链接等阶段
+    // 详情参见/clang/include/clang/Driver/Types.def
     auto PL = types::getCompilationPhases(InputType);
     LastPLSize = PL.size();
 
     // If the first step comes after the final phase we are doing as part of
     // this compilation, warn the user about it.
+    // 如果这个文件可用使用的阶段晚于这次编译的最终阶段，这个文件是用不上的，报错
     phases::ID InitialPhase = PL[0];
     if (InitialPhase > FinalPhase) {
       if (InputArg->isClaimed())
@@ -3628,12 +3746,17 @@ void Driver::handleArguments(Compilation &C, DerivedArgList &Args,
       continue;
     }
 
+    // 如果/Yc 选项存在的话，我们需要为该文件生成Precompiled header，即pch
     if (YcArg) {
       // Add a separate precompile phase for the compile phase.
       if (FinalPhase >= phases::Compile) {
+        // 输入文件的HeaderType。 比如 c文件对应 .h , c++ 文件对应 .hh
         const types::ID HeaderType = lookupHeaderTypeForSourceType(InputType);
         // Build the pipeline for the pch file.
+        // 构建InputAction，相关参数是InputArg，生成的文件类型是HeaderType
         Action *ClangClPch = C.MakeAction<InputAction>(*InputArg, HeaderType);
+        // 编译HeaderType所经历的阶段，构造Action
+        // 前面的阶段生成的Action用来生成后面的Action
         for (phases::ID Phase : types::getCompilationPhases(HeaderType))
           ClangClPch = ConstructPhaseAction(C, Args, Phase, ClangClPch);
         assert(ClangClPch);
@@ -3656,10 +3779,18 @@ void Driver::handleArguments(Compilation &C, DerivedArgList &Args,
   }
 }
 
+/**
+ * @brief 根据Args和Inputs构建Action，保存到Actions
+ * @param C 
+ * @param Args 
+ * @param Inputs 
+ * @param Actions 
+ */
 void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
                           const InputList &Inputs, ActionList &Actions) const {
   llvm::PrettyStackTraceString CrashInfo("Building compilation actions");
 
+  // 如果输入文件为空，报错
   if (!SuppressMissingInputWarning && Inputs.empty()) {
     Diag(clang::diag::err_drv_no_input_files);
     return;
@@ -3703,27 +3834,49 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
     }
   }
 
+  // 处理一些参数相关的错误，比如没有用到的参数，或者是矛盾的参数
+  // 除了PCH之外不进行其他Action的构建，
   handleArguments(C, Args, Inputs, Actions);
 
   // Builder to be used to build offloading actions.
   OffloadingActionBuilder OffloadBuilder(C, Args, Inputs);
 
   // Construct the actions to perform.
+  // 一般的Action只需要一个输入就行了，所以可以在遍历Inputs的时候就可以构建Action
+  // 而最终输出类型是Module、IMG、Ifs类型的Action需要把一个或多个文件作为输入
+  // 所以是多个Input构成一个Action
+  // 先把Input临时保存在ActionList里面，遍历完Inputs之后再构建Action
   HeaderModulePrecompileJobAction *HeaderModuleAction = nullptr;
   ActionList LinkerInputs;
   ActionList MergerInputs;
 
+  // 对于每个输入文件构建 Action Pipeline
   for (auto &I : Inputs) {
+    // 输入文件的类型
     types::ID InputType = I.first;
+    // 引入输入文件的参数
     const Arg *InputArg = I.second;
 
+    // PL保存本次编译的所有阶段
     auto PL = types::getCompilationPhases(*this, Args, InputType);
     if (PL.empty())
       continue;
 
+    // FullPL 保存本文件参与到的所有阶段
     auto FullPL = types::getCompilationPhases(InputType);
 
     // Build the pipeline for this file.
+    // Action Pipeline 可以看成一系列串联的Action形成的链表，特点是后面的Action的输入 是 前面的Action的输出
+    // 由于Action里面的Inputs成员可以保存其他List，所以Action可当成链表结构的节点
+    // 构建一个InputAction作为Action Pipeline的第一个Action
+    // Current保存Action Pipeline的 最新节点
+    // 最终生成的Action结构可能是这样的:
+    // Actions[0]:LinkJobAction
+    // Actions[0]->getInputs()[0]:AssembleJobAction
+    // Actions[0]->getInputs()[0]->getInputs()[0]:BackendJobAction
+    // Actions[0]->getInputs()[0]->getInputs()[0]->getInputs()[0]:CompileJobAction
+    // Actions[0]->getInputs()[0]->getInputs()[0]->getInputs()[0]->getInputs()[0]:PreprocessJobAction
+    // Actions[0]->getInputs()[0]->getInputs()[0]->getInputs()[0]->getInputs()[0]->getInputs()[0]:InputAction
     Action *Current = C.MakeAction<InputAction>(*InputArg, InputType);
 
     // Use the current host action in any of the offloading actions, if
@@ -3731,6 +3884,7 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
     if (OffloadBuilder.addHostDependenceToDeviceActions(Current, InputArg))
       break;
 
+    // 遍历本次编译的所有阶段,以构建Action Pipeline
     for (phases::ID Phase : PL) {
 
       // Add any offload action the host action depends on.
@@ -3740,6 +3894,8 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
         break;
 
       // Queue linker inputs.
+      // Link阶段会生成最终的exe文件，可以作为Action Pipeline的终点
+      // 把当前构建好的pipeline保存到LinkerInputs里
       if (Phase == phases::Link) {
         assert(Phase == PL.back() && "linking must be final compilation step.");
         LinkerInputs.push_back(Current);
@@ -3751,6 +3907,8 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
       // the final Phase in the pipeline. Perhaps the merged could just merge
       // and then pass an artifact of some sort to the Link Phase.
       // Queue merger inputs.
+      // IfsMerge阶段会生成最终的ifs文件，可以作为Action Pipeline的终点
+      // 把当前构建好的pipeline保存到MergerInputs里
       if (Phase == phases::IfsMerge) {
         assert(Phase == PL.back() && "merging must be final compilation step.");
         MergerInputs.push_back(Current);
@@ -3761,6 +3919,8 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
       // Each precompiled header file after a module file action is a module
       // header of that same module file, rather than being compiled to a
       // separate PCH.
+      // Precompile阶段会生成最终的pch文件，可以作为Action Pipeline的终点
+      // 把当前构建好的pipeline保存到HeaderModuleAction里
       if (Phase == phases::Precompile && HeaderModuleAction &&
           getPrecompiledType(InputType) == types::TY_PCH) {
         HeaderModuleAction->addModuleHeaderInput(Current);
@@ -3772,15 +3932,17 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
       // later actions in the same command line?
 
       // Otherwise construct the appropriate action.
+      // 非最终阶段，生成下一个Action Pipeline 的节点 , 保存到NewCurrent
       Action *NewCurrent = ConstructPhaseAction(C, Args, Phase, Current);
 
       // We didn't create a new action, so we will just move to the next phase.
+      // 有的Action会跳过某些阶段，此时不生成新节点，NewCurrent==Current。我们直接进入下一个阶段
       if (NewCurrent == Current)
         continue;
 
       if (auto *HMA = dyn_cast<HeaderModulePrecompileJobAction>(NewCurrent))
         HeaderModuleAction = HMA;
-
+      // 更新Current ， 保证Current 指向Pipiline中最新的节点
       Current = NewCurrent;
 
       // Use the current host action in any of the offloading actions, if
@@ -3793,6 +3955,7 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
     }
 
     // If we ended with something, add to the output list.
+    // 把构建的普通Pipeline保存到Compiler.Actions里面
     if (Current)
       Actions.push_back(Current);
 
@@ -3801,6 +3964,7 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
   }
 
   // Add a link action if necessary.
+  // 根据收集的Input构建LinkJobAction
   if (!LinkerInputs.empty()) {
     if (Action *Wrapper = OffloadBuilder.makeHostLinkAction())
       LinkerInputs.push_back(Wrapper);
@@ -3816,10 +3980,12 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
   }
 
   // Add an interface stubs merge action if necessary.
+  // 最终阶段是ifsMerge的 pipeline 特殊处理之后才放入Actions
   if (!MergerInputs.empty())
     Actions.push_back(
         C.MakeAction<IfsMergeJobAction>(MergerInputs, types::TY_Image));
 
+  // 如果参数里有-emit-interface-stubs，专门为其构建Pipeline
   if (Args.hasArg(options::OPT_emit_interface_stubs)) {
     auto PhaseList = types::getCompilationPhases(
         types::TY_IFS_CPP,
@@ -3896,7 +4062,15 @@ void Driver::BuildActions(Compilation &C, DerivedArgList &Args,
   Args.ClaimAllArgs(options::OPT_cuda_host_only);
   Args.ClaimAllArgs(options::OPT_cuda_compile_host_device);
 }
-
+/**
+ * @brief 根据Phase来基于InputAction生成Action，生成的Action由InputAction和OutputType组成
+ * @param C 
+ * @param Args 
+ * @param Phase 
+ * @param Input 
+ * @param TargetDeviceOffloadKind 
+ * @return Action* 
+ */
 Action *Driver::ConstructPhaseAction(
     Compilation &C, const ArgList &Args, phases::ID Phase, Action *Input,
     Action::OffloadKind TargetDeviceOffloadKind) const {
@@ -3928,6 +4102,7 @@ Action *Driver::ConstructPhaseAction(
           !Args.hasFlag(options::OPT_frewrite_imports,
                         options::OPT_fno_rewrite_imports, false) &&
           !CCGenDiagnostics)
+        // 获取文件类型预处理之后的类型 .h -> .i  ; .hh -> .ii
         OutputTy = types::getPreprocessedType(OutputTy);
       assert(OutputTy != types::TY_INVALID &&
              "Cannot preprocess this input type!");
@@ -3935,12 +4110,15 @@ Action *Driver::ConstructPhaseAction(
     return C.MakeAction<PreprocessJobAction>(Input, OutputTy);
   }
   case phases::Precompile: {
+    // 根据当前文件类型推断 预编译文件类型，可能是pch或者是pcm(C++20的module特性)
     types::ID OutputTy = getPrecompiledType(Input->getType());
     assert(OutputTy != types::TY_INVALID &&
            "Cannot precompile this input type!");
 
     // If we're given a module name, precompile header file inputs as a
     // module, not as a precompiled header.
+
+    // 翻译：如果我们给了一个module的名称，预编译头文件为module而不是pch
     const char *ModName = nullptr;
     if (OutputTy == types::TY_PCH) {
       if (Arg *A = Args.getLastArg(options::OPT_fmodule_name_EQ))
@@ -3954,9 +4132,11 @@ Action *Driver::ConstructPhaseAction(
       OutputTy = types::TY_Nothing;
     }
 
+    // 构建module
     if (ModName)
       return C.MakeAction<HeaderModulePrecompileJobAction>(Input, OutputTy,
                                                            ModName);
+    // 构建pch
     return C.MakeAction<PrecompileJobAction>(Input, OutputTy);
   }
   case phases::Compile: {
@@ -4020,6 +4200,7 @@ void Driver::BuildJobs(Compilation &C) const {
   // we are also generating .o files. So we allow more than one output file in
   // this case as well.
   //
+  // 如果有 -o 选项 ， 检查是不是只有一个输出文件（存在例外情况）
   if (FinalOutput) {
     unsigned NumOutputs = 0;
     unsigned NumIfsOutputs = 0;
@@ -4050,6 +4231,8 @@ void Driver::BuildJobs(Compilation &C) const {
 
   // Collect the list of architectures.
   llvm::StringSet<> ArchNames;
+
+  // 如果可执行文件是Mach-O格式的，收集所有的Arch
   if (RawTriple.isOSBinFormatMachO())
     for (const Arg *A : C.getArgs())
       if (A->getOption().matches(options::OPT_arch))
@@ -4057,6 +4240,7 @@ void Driver::BuildJobs(Compilation &C) const {
 
   // Set of (Action, canonical ToolChain triple) pairs we've built jobs for.
   std::map<std::pair<const Action *, std::string>, InputInfo> CachedResults;
+  // 遍历所有的TopAction,也就是一个个Action Pipeline
   for (Action *A : C.getActions()) {
     // If we are linking an image for multiple archs then the linker wants
     // -arch_multiple and -final_output <final image name>. Unfortunately, this
@@ -4445,6 +4629,7 @@ public:
 
     SmallVector<JobActionInfo, 5> ActionChain(1);
     ActionChain.back().JA = BaseAction;
+    // 把Action Pipeline 构成的链表保存到ActionChain里面
     while (ActionChain.back().JA) {
       const Action *CurAction = ActionChain.back().JA;
 
@@ -4466,12 +4651,16 @@ public:
     // action with any preprocessor action it may depend on.
     //
 
+    // 尝试合并Assemble、BackEnd、Compile的Tool
     const Tool *T = combineAssembleBackendCompile(ActionChain, Inputs,
                                                   CollapsedOffloadAction);
+    // 尝试合并Assemble、BackEnd的Tool
     if (!T)
       T = combineAssembleBackend(ActionChain, Inputs, CollapsedOffloadAction);
+    // 尝试合并BackEnd、Compile的Tool
     if (!T)
       T = combineBackendCompile(ActionChain, Inputs, CollapsedOffloadAction);
+    // 不能合并，直接选择BaseAction使用的Tool
     if (!T) {
       Inputs = BaseAction->getInputs();
       T = TC.SelectTool(*BaseAction);
@@ -4506,9 +4695,12 @@ InputInfo Driver::BuildJobsForAction(
     bool AtTopLevel, bool MultipleArchs, const char *LinkingOutput,
     std::map<std::pair<const Action *, std::string>, InputInfo> &CachedResults,
     Action::OffloadKind TargetDeviceOffloadKind) const {
+  // 该函数的作用就是保证对于每个（Action，ToolChain,BoundArch,DeviceKind）只会
+  // 执行一次BuildJob，真正做事的函数是BuildJobsForActionNoCache。
   std::pair<const Action *, std::string> ActionTC = {
       A, GetTriplePlusArchString(TC, BoundArch, TargetDeviceOffloadKind)};
   auto CachedResult = CachedResults.find(ActionTC);
+  // 如果之前做过相同的工作，不用再做了，直接返回。
   if (CachedResult != CachedResults.end()) {
     return CachedResult->second;
   }
@@ -4528,6 +4720,7 @@ InputInfo Driver::BuildJobsForActionNoCache(
 
   InputInfoList OffloadDependencesInputInfo;
   bool BuildingForOffloadDevice = TargetDeviceOffloadKind != Action::OFK_None;
+  // 处理OffloadAction
   if (const OffloadAction *OA = dyn_cast<OffloadAction>(A)) {
     // The 'Darwin' toolchain is initialized only when its arguments are
     // computed. Get the default arguments for OFK_None to ensure that
@@ -4589,6 +4782,7 @@ InputInfo Driver::BuildJobsForActionNoCache(
             : OA->getHostDependence();
   }
 
+  // 处理InputAction
   if (const InputAction *IA = dyn_cast<InputAction>(A)) {
     // FIXME: It would be nice to not claim this here; maybe the old scheme of
     // just using Args was better?
@@ -4601,6 +4795,8 @@ InputInfo Driver::BuildJobsForActionNoCache(
     return InputInfo(A, &Input, /* _BaseInput = */ "");
   }
 
+  // 处理BindArchAction
+  // 如果A是BindArchAction,获取Arch，input(是LinkJobAction),ToolChain.转发给BuildJobForAction
   if (const BindArchAction *BAA = dyn_cast<BindArchAction>(A)) {
     const ToolChain *TC;
     StringRef ArchName = BAA->getArchName();
@@ -4617,7 +4813,8 @@ InputInfo Driver::BuildJobsForActionNoCache(
                               TargetDeviceOffloadKind);
   }
 
-
+  // 非OffloadAction、非InputAction、非BindArchAction会到达这里
+  // Action的输入文件
   ActionList Inputs = A->getInputs();
 
   const JobAction *JA = cast<JobAction>(A);
@@ -4625,6 +4822,7 @@ InputInfo Driver::BuildJobsForActionNoCache(
 
   ToolSelector TS(JA, *TC, C, isSaveTempsEnabled(),
                   embedBitcodeInObject() && !isUsingLTO());
+  // 选择Action使用的Tool，如果可能的话尽量和之前的Action使用相同的Tool
   const Tool *T = TS.getTool(Inputs, CollapsedOffloadActions);
 
   if (!T)
@@ -4663,6 +4861,9 @@ InputInfo Driver::BuildJobsForActionNoCache(
 
   // Only use pipes when there is exactly one input.
   InputInfoList InputInfos;
+  // 处理Action的Input。这个Input类型可能是AssembleJobAction、BackendJobAction这种的
+  // 修改了Action、AtToplevel、TargetDevideOffloadKind后，转发给BuildJobForAction处理
+  // 这里是Action Pipeline的递归处理点
   for (const Action *Input : Inputs) {
     // Treat dsymutil and verify sub-jobs as being at the top-level too, they
     // shouldn't get temporary output names.
@@ -4694,6 +4895,8 @@ InputInfo Driver::BuildJobsForActionNoCache(
   // Set the effective triple of the toolchain for the duration of this job.
   llvm::Triple EffectiveTriple;
   const ToolChain &ToolTC = T->getToolChain();
+  //  之前我们已经对 C.Args 简单翻译过了并保存在 C.TranslatedArgs 里面，
+  //  现在需要由 ToolChine 对 C.TranslatedArgs 做进一步的翻译
   const ArgList &Args =
       C.getArgsForToolChain(TC, BoundArch, A->getOffloadingDeviceKind());
   if (InputInfos.size() != 1) {
@@ -4703,6 +4906,7 @@ InputInfo Driver::BuildJobsForActionNoCache(
     EffectiveTriple = llvm::Triple(
         ToolTC.ComputeEffectiveClangTriple(Args, InputInfos[0].getType()));
   }
+  // 临时设置ToolChine 的 EffectiveTriple，直到函数退出
   RegisterEffectiveTriple TripleRAII(ToolTC, EffectiveTriple);
 
   // Determine the place to write output to, if any.
@@ -4781,6 +4985,7 @@ InputInfo Driver::BuildJobsForActionNoCache(
                        BaseInput);
   }
 
+  // 如果只打印Tool Bind而不真正分配工作
   if (CCCPrintBindings && !CCGenDiagnostics) {
     llvm::errs() << "# \"" << T->getToolChain().getTripleString() << '"'
                  << " - \"" << T->getName() << "\", inputs: [";
@@ -4801,6 +5006,8 @@ InputInfo Driver::BuildJobsForActionNoCache(
       llvm::errs() << "] \n";
     }
   } else {
+    // 由选择的Tool构建工作
+    // 构建的成果就是C.Jobs
     if (UnbundlingResults.empty())
       T->ConstructJob(
           C, *JA, Result, InputInfos,

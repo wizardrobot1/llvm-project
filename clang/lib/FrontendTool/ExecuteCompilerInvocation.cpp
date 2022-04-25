@@ -136,6 +136,7 @@ CreateFrontendBaseAction(CompilerInstance &CI) {
 std::unique_ptr<FrontendAction>
 CreateFrontendAction(CompilerInstance &CI) {
   // Create the underlying action.
+  // 根据 CI.getFrontendOpts().ProgramAction 构建 FrontendAction
   std::unique_ptr<FrontendAction> Act = CreateFrontendBaseAction(CI);
   if (!Act)
     return nullptr;
@@ -186,6 +187,7 @@ CreateFrontendAction(CompilerInstance &CI) {
 
 bool ExecuteCompilerInvocation(CompilerInstance *Clang) {
   // Honor -help.
+  // 输出帮助信息
   if (Clang->getFrontendOpts().ShowHelp) {
     driver::getDriverOptTable().printHelp(
         llvm::outs(), "clang -cc1 [options] file...",
@@ -198,12 +200,14 @@ bool ExecuteCompilerInvocation(CompilerInstance *Clang) {
   // Honor -version.
   //
   // FIXME: Use a better -version message?
+  // 输出版本信息
   if (Clang->getFrontendOpts().ShowVersion) {
     llvm::cl::PrintVersionMessage();
     return true;
   }
 
   // Load any requested plugins.
+  // 载入插件
   for (const std::string &Path : Clang->getFrontendOpts().Plugins) {
     std::string Error;
     if (llvm::sys::DynamicLibrary::LoadLibraryPermanently(Path.c_str(), &Error))
@@ -212,6 +216,7 @@ bool ExecuteCompilerInvocation(CompilerInstance *Clang) {
   }
 
   // Check if any of the loaded plugins replaces the main AST action
+  //  查看插件是否替换了 main AST action
   for (const FrontendPluginRegistry::entry &Plugin :
        FrontendPluginRegistry::entries()) {
     std::unique_ptr<PluginASTAction> P(Plugin.instantiate());
@@ -272,9 +277,11 @@ bool ExecuteCompilerInvocation(CompilerInstance *Clang) {
   if (Clang->getDiagnostics().hasErrorOccurred())
     return false;
   // Create and execute the frontend action.
+  // 创建前端任务
   std::unique_ptr<FrontendAction> Act(CreateFrontendAction(*Clang));
   if (!Act)
     return false;
+  // 执行前端任务
   bool Success = Clang->ExecuteAction(*Act);
   if (Clang->getFrontendOpts().DisableFree)
     llvm::BuryPointer(std::move(Act));

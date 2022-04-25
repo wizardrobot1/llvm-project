@@ -101,6 +101,11 @@ OptTable::OptTable(ArrayRef<Info> OptionInfos, bool IgnoreCase)
   // value-initialization on MinGW with gcc 4.3.5.
 
   // Find start of normal options.
+  // 遍历参数表OptTable::OptInfos数组,
+  // 找到Input类型输入的OptionID，
+  // 找到未知类型输入的OptionID，
+  // 找到第一个不是特殊类型输入的OptionID
+  // (特殊类型包括了InputClass、UnknownClass、GroupClass)
   for (unsigned i = 0, e = getNumOptions(); i != e; ++i) {
     unsigned Kind = getInfo(i + 1).Kind;
     if (Kind == Option::InputClass) {
@@ -342,6 +347,8 @@ Arg *OptTable::parseOneArgGrouped(InputArgList &Args, unsigned &Index) const {
   // itself.
   const char *CStr = Args.getArgString(Index);
   StringRef Str(CStr);
+  // 判断Arg字符串前缀是否是clang提供的Option
+  // 如果是Input 而 不是 Option，构造的ArgumentInstance的Opt为InputOption
   if (isInput(PrefixesUnion, Str))
     return new Arg(getOption(TheInputOptionID), Str, Index++, CStr);
 
@@ -400,6 +407,7 @@ Arg *OptTable::ParseOneArg(const ArgList &Args, unsigned &Index,
 
   const Info *Start = OptionInfos.data() + FirstSearchableIndex;
   const Info *End = OptionInfos.data() + OptionInfos.size();
+  // Name是去掉所有前缀字符的Str ("--help" -> "help")
   StringRef Name = StringRef(Str).ltrim(PrefixChars);
 
   // Search for the first next option which could be a prefix.
@@ -417,19 +425,33 @@ Arg *OptTable::ParseOneArg(const ArgList &Args, unsigned &Index,
     unsigned ArgSize = 0;
     // Scan for first option which is a proper prefix.
     for (; Start != End; ++Start)
+      // 注意，这里是 = ，和 == 的意思完全相反，
+      // 如果Start的某个 "前缀(eg. - )+名字(eg. a)"
+      // 是 Str(eg. -abc)的可以匹配上，返回匹配上的长度(eg. 2)
+
+      // 注：
+      // Info.prefix 是一个字符串数组
+      // 比如Info.prefix=prefix2 就包含了 "/" ,"-" 2种前缀
       if ((ArgSize = matchOption(Start, Str, IgnoreCase)))
         break;
     if (Start == End)
       break;
 
+    // 到此，说明Str至少包含了Start这个Option，可以据此创建一个Option对象
     Option Opt(Start, this);
 
+    // 如果该Option包含的Flag已经Include了，该Option是多余的
     if (FlagsToInclude && !Opt.hasFlag(FlagsToInclude))
       continue;
+    // 如果该Option包含的Flag已经Exclude了，该Option是矛盾的
+    // 比如对于 /TP , 它的 Flag= CLOption|DriverOption
+    // 如果我们调用的Driver不支持MSVC，FlagsToExclude就会|=CLOption
+    // 此时 Flag & FlagsToExclude == True 说明使用了不兼容的选项
     if (Opt.hasFlag(FlagsToExclude))
       continue;
 
     // See if this option matches.
+    // 判断参数是否合法，并构建Arg
     if (Arg *A = Opt.accept(Args, StringRef(Args.getArgString(Index), ArgSize),
                             false, Index))
       return A;
@@ -441,6 +463,7 @@ Arg *OptTable::ParseOneArg(const ArgList &Args, unsigned &Index,
 
   // If we failed to find an option and this arg started with /, then it's
   // probably an input path.
+  // 如果没有找到对应的选项而且参数以 / 打头， 那么这有可能是个路径
   if (Str[0] == '/')
     return new Arg(getOption(TheInputOptionID), Str, Index++, Str);
 
@@ -452,19 +475,26 @@ InputArgList OptTable::ParseArgs(ArrayRef<const char *> ArgArr,
                                  unsigned &MissingArgCount,
                                  unsigned FlagsToInclude,
                                  unsigned FlagsToExclude) const {
+  // Args.ArgStrings(llvm::SmallVector<const char *, 16U>) 保存原始参数字符串
+  // Args.Args(SmallVector<Arg *, 16>) 保存Parse好的计算机可识别的Arg结构
+  // Args.ArgStrings 在Args初始化时赋值
   InputArgList Args(ArgArr.begin(), ArgArr.end());
 
   // FIXME: Handle '@' args (or at least error on them).
 
   MissingArgIndex = MissingArgCount = 0;
   unsigned Index = 0, End = ArgArr.size();
+  // 遍历所有的原始参数字符串，把它parse成Arg，
+  // 存放到Args.Args数组里面
   while (Index < End) {
     // Ingore nullptrs, they are response file's EOL markers
+    // ArgArr 中的元素可能是nullptr（cfg文件中的EOL被错误计入）
     if (Args.getArgString(Index) == nullptr) {
       ++Index;
       continue;
     }
     // Ignore empty arguments (other things may still take them as arguments).
+    // ArgArr 中的字符串可能为空
     StringRef Str = Args.getArgString(Index);
     if (Str == "") {
       ++Index;
@@ -472,6 +502,9 @@ InputArgList OptTable::ParseArgs(ArrayRef<const char *> ArgArr,
     }
 
     unsigned Prev = Index;
+    // 把 原始参数字符串 Parse 成 Arg，
+    // 有2种Parse模式，GroupedShortOptions = True/False
+    // 不是很懂，以后再看吧
     Arg *A = GroupedShortOptions
                  ? parseOneArgGrouped(Args, Index)
                  : ParseOneArg(Args, Index, FlagsToInclude, FlagsToExclude);
@@ -487,6 +520,7 @@ InputArgList OptTable::ParseArgs(ArrayRef<const char *> ArgArr,
       break;
     }
 
+    // 把 Arg 存放到Args.Args数组里面
     Args.append(A);
   }
 

@@ -104,7 +104,7 @@ class Lexer : public PreprocessorLexer {
   /// and return them as tokens.  This is used for -C and -CC modes, and
   /// whitespace preservation can be useful for some clients that want to lex
   /// the file in raw mode and get every character from the file.
-  ///
+  /// 控制是否输出comment token 和 whitespace token
   /// When this is set to 2 it returns comments and whitespace.  When set to 1
   /// it returns comments, when it is set to 0 it returns normal tokens only.
   unsigned char ExtendedTokenMode;
@@ -116,6 +116,7 @@ class Lexer : public PreprocessorLexer {
 
   // BufferPtr - Current pointer into the buffer.  This is the next character
   // to be lexed.
+  // 用来标记下一个Token的起始位置
   const char *BufferPtr;
 
   // IsAtStartOfLine - True if the next lexed token should get the "start of
@@ -583,6 +584,8 @@ private:
   /// takes that range and assigns it to the token as its location and size.  In
   /// addition, since tokens cannot overlap, this also updates BufferPtr to be
   /// TokEnd.
+
+  // 构建一个Token，设置Token的长度，位置，种类
   void FormTokenWithChars(Token &Result, const char *TokEnd,
                           tok::TokenKind Kind) {
     unsigned TokLen = TokEnd-BufferPtr;
@@ -627,11 +630,16 @@ private:
   /// advance over it, and return it.  This is tricky in several cases.  Here we
   /// just handle the trivial case and fall-back to the non-inlined
   /// getCharAndSizeSlow method to handle the hard case.
+  //  如果是普通的字符的话，返回该字符
+  //  如果是trigraph的话，如果支持trigraph的话，返回trigraph所代表的符号
+  //  如果是转义符+换行符(中间可以有空格)的话，返回换行符的下一个字符
+  //  该函数返回时，指针指向返回字符的下一个位置
   inline char getAndAdvanceChar(const char *&Ptr, Token &Tok) {
     // If this is not a trigraph and not a UCN or escaped newline, return
     // quickly.
     if (isObviouslySimpleCharacter(Ptr[0])) return *Ptr++;
 
+    // 由于可能有多个 ‘转义符+换行符’连在一起需要跳过，所以我们使用Size来在递归调用中保存总共要跳过多少字符
     unsigned Size = 0;
     char C = getCharAndSizeSlow(Ptr, Size, &Tok);
     Ptr += Size;

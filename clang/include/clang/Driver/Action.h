@@ -514,6 +514,9 @@ public:
   }
 };
 
+/**
+ * @brief LIPO 是 Mac 中用来整合不同 Arch的程序，并合成一个Fat Binary
+ */
 class LipoJobAction : public JobAction {
   void anchor() override;
 

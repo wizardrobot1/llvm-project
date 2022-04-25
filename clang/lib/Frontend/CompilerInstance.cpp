@@ -970,7 +970,9 @@ bool CompilerInstance::ExecuteAction(FrontendAction &Act) {
     if (hasSourceManager() && !Act.isModelParsingAction())
       getSourceManager().clearIDTables();
 
+    // 初始化 FileManger、SourceManager等
     if (Act.BeginSourceFile(*this, FIF)) {
+      // 执行Action
       if (llvm::Error Err = Act.Execute()) {
         consumeError(std::move(Err)); // FIXME this drops errors on the floor.
       }

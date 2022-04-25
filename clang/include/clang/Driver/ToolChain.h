@@ -292,6 +292,8 @@ public:
   /// specific translations are needed. If \p DeviceOffloadKind is specified
   /// the translation specific for that offload kind is performed.
   ///
+  /// 这个函数会被具体的工具链重载，用来进行每个工具链特殊的翻译
+  ///
   /// \param BoundArch - The bound architecture name, or 0.
   /// \param DeviceOffloadKind - The device offload kind used for the
   /// translation.

@@ -73,7 +73,9 @@ private:
 
   /// The union of all option prefixes. If an argument does not begin with
   /// one of these, it is an input.
+  // 所有选项的前缀结合，clang里面有这几种"-","--","/"
   StringSet<> PrefixesUnion;
+  // 保存了所有前缀中出现过的字符,也就是"-/"
   std::string PrefixChars;
 
 private:

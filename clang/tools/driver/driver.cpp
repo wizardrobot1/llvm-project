@@ -497,11 +497,13 @@ int main(int Argc, const char **Argv) {
     llvm::CrashRecoveryContext::Enable();
   }
 
+  // 生成指令
   std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(Args));
   int Res = 1;
   bool IsCrash = false;
   if (C && !C->containsError()) {
     SmallVector<std::pair<int, const Command *>, 4> FailingCommands;
+    // 执行指令
     Res = TheDriver.ExecuteCompilation(*C, FailingCommands);
 
     // Force a crash to test the diagnostics.

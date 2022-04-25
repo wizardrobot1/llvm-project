@@ -4344,6 +4344,15 @@ static bool ParseTargetArgs(TargetOptions &Opts, ArgList &Args,
   return Diags.getNumErrors() == NumErrorsBefore;
 }
 
+/**
+ * @brief 把 参数字符串Parse 成 Arg ， 根据 Arg 构建 CompilerInvocation 
+ * @param Res 
+ * @param CommandLineArgs 
+ * @param Diags 
+ * @param Argv0 
+ * @return true 
+ * @return false 
+ */
 bool CompilerInvocation::CreateFromArgsImpl(
     CompilerInvocation &Res, ArrayRef<const char *> CommandLineArgs,
     DiagnosticsEngine &Diags, const char *Argv0) {
@@ -4358,11 +4367,13 @@ bool CompilerInvocation::CreateFromArgsImpl(
   LangOptions &LangOpts = *Res.getLangOpts();
 
   // Check for missing argument error.
+  // 查看是否有缺失的参数
   if (MissingArgCount)
     Diags.Report(diag::err_drv_missing_argument)
         << Args.getArgString(MissingArgIndex) << MissingArgCount;
 
   // Issue errors on unknown arguments.
+  // 查看是否有不支持的参数
   for (const auto *A : Args.filtered(OPT_UNKNOWN)) {
     auto ArgString = A->getAsString(Args);
     std::string Nearest;
@@ -4373,6 +4384,7 @@ bool CompilerInvocation::CreateFromArgsImpl(
           << ArgString << Nearest;
   }
 
+  // 根据 Parse好的 Args设置 Res
   ParseFileSystemArgs(Res.getFileSystemOpts(), Args, Diags);
   ParseMigratorArgs(Res.getMigratorOpts(), Args, Diags);
   ParseAnalyzerArgs(*Res.getAnalyzerOpts(), Args, Diags);

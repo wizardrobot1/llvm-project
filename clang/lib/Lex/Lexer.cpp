@@ -1204,22 +1204,34 @@ static char DecodeTrigraphChar(const char *CP, Lexer *L) {
   return Res;
 }
 
+/// 返回从Ptr开始 连续的空格数量+ 1~2(换行符的数量)
 /// getEscapedNewLineSize - Return the size of the specified escaped newline,
 /// or 0 if it is not an escaped newline. P[-1] is known to be a "\" or a
 /// trigraph equivalent on entry to this function.
 unsigned Lexer::getEscapedNewLineSize(const char *Ptr) {
   unsigned Size = 0;
   while (isWhitespace(Ptr[Size])) {
-    ++Size;
+    // int N=Size;
+    // Ptr[N]是空格 或者 换行
 
+    ++Size;
+    // 此时Size==N+1
+
+    // 如果Ptr[N]是空格，继续找
     if (Ptr[Size-1] != '\n' && Ptr[Size-1] != '\r')
       continue;
 
+    // 到这里,Ptr[N]一定是换行(\r或者\n)，我们差不多找完了，不过最后要看下是不是2个换行符的那种
+
     // If this is a \r\n or \n\r, skip the other half.
+    // 查看Ptr[N]的下一个是不是也是换行
+    // 如果Ptr[N]和Ptr[N+1]都是换行，且一个是\r一个是\n
+    // 则 ++Size
     if ((Ptr[Size] == '\r' || Ptr[Size] == '\n') &&
         Ptr[Size-1] != Ptr[Size])
       ++Size;
 
+    // 返回Size，Size=连续的空格数量+ 1~2(换行符的数量)
     return Size;
   }
 
@@ -1316,6 +1328,8 @@ SourceLocation Lexer::findLocationAfterToken(
   return TokenLoc.getLocWithOffset(Tok->getLength() + NumWhitespaceChars);
 }
 
+/// 处理可能出现的 trigraph 或 转义+若干空格+换行 的情况
+/// 参数中的Tok不是为了添加token的内容，而是为了设置flag，表示当前token里面是不是有转义换行
 /// getCharAndSizeSlow - Peek a single 'character' from the specified buffer,
 /// get its size, and return it.  This is tricky in several cases:
 ///   1. If currently at the start of a trigraph, we warn about the trigraph,
@@ -1334,20 +1348,24 @@ SourceLocation Lexer::findLocationAfterToken(
 char Lexer::getCharAndSizeSlow(const char *Ptr, unsigned &Size,
                                Token *Tok) {
   // If we have a slash, look for an escaped newline.
+  // 如果当前字符是 转义符 ， 去寻找 转义+若干空格+换行的模式
   if (Ptr[0] == '\\') {
     ++Size;
     ++Ptr;
 Slash:
     // Common case, backslash-char where the char is not whitespace.
+    // 转义后面既不是空格也不是换行，直接返回
     if (!isWhitespace(Ptr[0])) return '\\';
 
     // See if we have optional whitespace characters between the slash and
     // newline.
+    // 如果查找到 \ 后面存在 连续空格符+换行符的数量,即模式匹配
     if (unsigned EscapedNewLineSize = getEscapedNewLineSize(Ptr)) {
       // Remember that this token needs to be cleaned.
       if (Tok) Tok->setFlag(Token::NeedsCleaning);
 
       // Warn if there was whitespace between the backslash and newline.
+      // 如果换行前面有空格，警告
       if (Ptr[0] != '\n' && Ptr[0] != '\r' && Tok && !isLexingRawMode())
         Diag(Ptr, diag::backslash_newline_space);
 
@@ -1356,23 +1374,28 @@ Slash:
       Ptr  += EscapedNewLineSize;
 
       // Use slow version to accumulate a correct size field.
+      // 可能有多个转义的换行都要跳过，所以Size要累加
       return getCharAndSizeSlow(Ptr, Size, Tok);
     }
 
     // Otherwise, this is not an escaped newline, just return the slash.
+    // 模式不能匹配，直接返回
     return '\\';
   }
 
   // If this is a trigraph, process it.
+  // 如果当前指针指向??*,可能是trigraph
   if (Ptr[0] == '?' && Ptr[1] == '?') {
     // If this is actually a legal trigraph (not something like "??x"), emit
     // a trigraph warning.  If so, and if trigraphs are enabled, return it.
+    // 通过??后面的字符查表可知该trigraph所表示的字符，顺便报警告
     if (char C = DecodeTrigraphChar(Ptr+2, Tok ? this : nullptr)) {
       // Remember that this token needs to be cleaned.
       if (Tok) Tok->setFlag(Token::NeedsCleaning);
 
       Ptr += 3;
       Size += 3;
+      // 有可能是 ??/ \n这种情况
       if (C == '\\') goto Slash;
       return C;
     }
@@ -1767,10 +1790,15 @@ bool Lexer::isHexaLiteral(const char *Start, const LangOptions &LangOpts) {
 /// LexNumericConstant - Lex the remainder of a integer or floating point
 /// constant. From[-1] is the first character lexed.  Return the end of the
 /// constant.
+// 生成一个tok::numeric_constant ，
+// 该函数主要工作内容就是找到该tok的结束位置(用CurPtr存)，减去BufferPtr来求token的长度
+// 生成的token 不会记录字面量的数值，而是使用PtrData记录字面量的在buffer中的起始位置
+// 通过token中保存的 起始位置 和 长度 我们可以得到字面量的str形式。
 bool Lexer::LexNumericConstant(Token &Result, const char *CurPtr) {
   unsigned Size;
   char C = getCharAndSize(CurPtr, Size);
   char PrevCh = 0;
+  // 读取 [a-zA-Z0-9_.] 
   while (isPreprocessingNumberBody(C)) {
     CurPtr = ConsumeChar(CurPtr, Size, Result);
     PrevCh = C;
@@ -2279,6 +2307,10 @@ bool Lexer::SkipWhitespace(Token &Result, const char *CurPtr,
   return false;
 }
 
+/// 处理单行注释，我们已经读取了// ,接下来应该是要把这个注释读完,一般来说就是读到换行符为止
+/// 所以为什么这个函数有这么长呢！
+/// 因为换行符可以被转义！此时单行注释可以写多行
+/// 因为转义符可以写成??/(trigraph)!
 /// We have just read the // characters from input.  Skip until we find the
 /// newline character that terminates the comment.  Then update BufferPtr and
 /// return.
@@ -2289,6 +2321,7 @@ bool Lexer::SkipLineComment(Token &Result, const char *CurPtr,
                             bool &TokAtPhysicalStartOfLine) {
   // If Line comments aren't explicitly enabled for this language, emit an
   // extension warning.
+  // 如果当前语言不支持单行的注释
   if (!LangOpts.LineComment && !isLexingRawMode()) {
     Diag(BufferPtr, diag::ext_line_comment);
 
@@ -2307,20 +2340,30 @@ bool Lexer::SkipLineComment(Token &Result, const char *CurPtr,
   while (true) {
     C = *CurPtr;
     // Skip over characters in the fast loop.
+    // \0,\n,\r之外的字符一定都是注释的内容
     while (C != 0 &&                // Potentially EOF.
            C != '\n' && C != '\r')  // Newline or DOS-style newline.
       C = *++CurPtr;
+    // 此时 C==*CurPtr
 
     const char *NextLine = CurPtr;
+    // 如果当前字符是换行符，有2种可能
+    // (1) 注释结束了，while 循环结束
+    // (2) 该换行前有转义符或trigraph，可能被转义了(也可能由于不支持trigraph没有)，我们把CurPtr回移到转义符处
     if (C != 0) {
       // We found a newline, see if it's escaped.
+
+      // 用来寻找换行符前面的转义符
       const char *EscapePtr = CurPtr-1;
       bool HasSpace = false;
+      // 跳过空格、\t、\f、\v
       while (isHorizontalWhitespace(*EscapePtr)) { // Skip whitespace.
         --EscapePtr;
         HasSpace = true;
       }
 
+      // 如果找到转义符，把CurPtr指向转义符的位置
+      // 如果没有找到转义符，也不用继续往后面看了，跳出while循环
       if (*EscapePtr == '\\')
         // Escaped newline.
         CurPtr = EscapePtr;
@@ -2332,9 +2375,13 @@ bool Lexer::SkipLineComment(Token &Result, const char *CurPtr,
         break; // This is a newline, we're done.
 
       // If there was space between the backslash and newline, warn about it.
+      // 如果在转义符和换行之间有空格，警告，因为可能程序员是想要用转义符来多行注释的
+      // 转义后面应该是紧接着要转义的符号
       if (HasSpace && !isLexingRawMode())
         Diag(EscapePtr, diag::backslash_newline_space);
     }
+
+    // 现在CurPtr 指向 \0 或者 \ \n 或者 ??/ \n
 
     // Otherwise, this is a hard case.  Fall back on getAndAdvanceChar to
     // properly decode the character.  Read it in raw mode to avoid emitting
@@ -2343,11 +2390,15 @@ bool Lexer::SkipLineComment(Token &Result, const char *CurPtr,
     const char *OldPtr = CurPtr;
     bool OldRawMode = isLexingRawMode();
     LexingRawMode = true;
+    // 如果*CurPtr==0，getAndAdvanceChar返回0，
+    // 否则返回(‘转义+换行’后的下一个字符) 或者 ?(因为trigraph不能被识别)
     C = getAndAdvanceChar(CurPtr, Result);
     LexingRawMode = OldRawMode;
 
+
     // If we only read only one character, then no special handling is needed.
     // We're done and can skip forward to the newline.
+    // 如果C是'?'的话，说明没有转义成功，本行注释结束了
     if (C != 0 && CurPtr == OldPtr+1) {
       CurPtr = NextLine;
       break;
@@ -2356,12 +2407,14 @@ bool Lexer::SkipLineComment(Token &Result, const char *CurPtr,
     // If we read multiple characters, and one of those characters was a \r or
     // \n, then we had an escaped newline within the comment.  Emit diagnostic
     // unless the next line is also a // comment.
+    // 转义成功
     if (CurPtr != OldPtr + 1 && C != '/' &&
         (CurPtr == BufferEnd + 1 || CurPtr[0] != '/')) {
       for (; OldPtr != CurPtr; ++OldPtr)
         if (OldPtr[0] == '\n' || OldPtr[0] == '\r') {
           // Okay, we found a // comment that ends in a newline, if the next
           // line is also a // comment, but has spaces, don't emit a diagnostic.
+          // 如果我们使用了 转义符+换行符 的方式，但下一行也是注释，那么不用警告
           if (isWhitespace(C)) {
             const char *ForwardPtr = CurPtr;
             while (isWhitespace(*ForwardPtr))  // Skip whitespace.
@@ -2369,24 +2422,31 @@ bool Lexer::SkipLineComment(Token &Result, const char *CurPtr,
             if (ForwardPtr[0] == '/' && ForwardPtr[1] == '/')
               break;
           }
-
+          // 否则 ，警告
           if (!isLexingRawMode())
             Diag(OldPtr-1, diag::ext_multi_line_line_comment);
           break;
         }
     }
 
+    // 如果 (1)虽然转义成功，但转义+换行之后的下个字符还是换行 或者 (2)到达文件结尾
+    // 说明注释结束了，把CruPtr回移，指向注释的尾部
     if (C == '\r' || C == '\n' || CurPtr == BufferEnd + 1) {
       --CurPtr;
       break;
     }
 
+    // 代码补全模式
     if (C == '\0' && isCodeCompletionPoint(CurPtr-1)) {
       PP->CodeCompleteNaturalLanguage();
       cutOffLexing();
       return false;
     }
+    
+    // 如果转义换行成功了，注释可以跨越多行，继续while循环，直到该注释结束
   }
+
+  // 当前注释已经结束,此时CurPtr指向\n
 
   // Found but did not consume the newline.  Notify comment handlers about the
   // comment unless we're in a #if 0 block.
@@ -2398,15 +2458,19 @@ bool Lexer::SkipLineComment(Token &Result, const char *CurPtr,
   }
 
   // If we are returning comments as tokens, return this comment as a token.
+  // Result 设置为 Tok::comment
   if (inKeepCommentMode())
     return SaveLineComment(Result, CurPtr);
 
   // If we are inside a preprocessor directive and we see the end of line,
   // return immediately, so that the lexer can return this as an EOD token.
+  // 返回false，BufferPtr指向\n，调用者会返回一个tok::EOD
   if (ParsingPreprocessorDirective || CurPtr == BufferEnd) {
     BufferPtr = CurPtr;
     return false;
   }
+
+  // 吞掉换行符，不生成Token，从下一个字符开始算新的Token
 
   // Otherwise, eat the \n character.  We don't care if this is a \n\r or
   // \r\n sequence.  This is an efficiency hack (because we know the \n can't
@@ -2431,11 +2495,14 @@ bool Lexer::SaveLineComment(Token &Result, const char *CurPtr) {
   // directly.
   FormTokenWithChars(Result, CurPtr, tok::comment);
 
+  // 如果现在不是在Parse宏定义 或者是 RawLexer，可以直接返回了
   if (!ParsingPreprocessorDirective || LexingRawMode)
     return true;
 
   // If this Line-style comment is in a macro definition, transmogrify it into
   // a C-style block comment.
+  // 如果当前不是RawLexer，而且单行注释出现在宏定义里面，把它转化成C风格的块注释
+  // 因为外部调用的时候必须是RawLexer，所以不用担心这里的实现会影响用户获取到错误的String
   bool Invalid = false;
   std::string Spelling = PP->getSpelling(Result, &Invalid);
   if (Invalid)
@@ -2463,6 +2530,8 @@ static bool isEndOfBlockCommentWithEscapedNewLine(const char *CurPtr,
   // Position of the first whitespace after a '\' in the ending sequence.
   const char *SpacePos = 0;
 
+  // 使用while循环来处理*+ 多个转义换行 + / 的情况
+  // 保证循环开始的时候，我们刚读完一个\n
   while (true) {
     // Back up off the newline.
     --CurPtr;
@@ -2494,15 +2563,23 @@ static bool isEndOfBlockCommentWithEscapedNewLine(const char *CurPtr,
       return false;
     }
 
+    // 到这里已经判断出存在 转义换行+/
+    // 如果前面是* ， 注释正好结束
+
     // If the character preceding the escaped newline is a '*', then after line
     // splicing we have a '*/' ending the comment.
     if (*CurPtr == '*')
       break;
 
+    // 如果前面是换行，可能是 转义换行+转义换行+/ 的情况，回到循环开始
+    // 否则这里不是循环结束
     if (*CurPtr != '\n' && *CurPtr != '\r')
       return false;
   }
 
+  // 到这里已经判断出存在 *+若干转义换行+/
+
+  // 根据trigraph的支持情况判断转义是否成立
   if (TrigraphPos) {
     // If no trigraphs are enabled, warn that we ignored this trigraph and
     // ignore this * character.
@@ -2516,10 +2593,12 @@ static bool isEndOfBlockCommentWithEscapedNewLine(const char *CurPtr,
   }
 
   // Warn about having an escaped newline between the */ characters.
+  // *+转义换行+/ 这种用法需要警告
   if (!L->isLexingRawMode())
     L->Diag(CurPtr + 1, diag::escaped_newline_block_comment_end);
 
   // If there was space between the backslash and newline, warn about it.
+  // 转义和换行中的空格需要警告
   if (SpacePos && !L->isLexingRawMode())
     L->Diag(SpacePos, diag::backslash_newline_space);
 
@@ -2539,7 +2618,9 @@ static bool isEndOfBlockCommentWithEscapedNewLine(const char *CurPtr,
 /// comments, because they cannot cause the comment to end.  The only thing
 /// that can happen is the comment could end with an escaped newline between
 /// the terminating * and /.
-///
+/// 现在我们已经读取了/ 和 * , 接下来要读取* 和 /
+/// 在块注释中我们不需要识别trigraph和转义换行，因为换行不会导致注释结束
+/// 唯一要注意的是在* 和 / 中间的转义换行和trigraph
 /// If we're in KeepCommentMode or any CommentHandler has inserted
 /// some tokens, this will store the first token and return true.
 bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr,
@@ -2549,12 +2630,19 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr,
   // optimization helps people who like to put a lot of * characters in their
   // comments.
 
+
+  // 优化技巧：
+  // 在读取 / 的时候 查看是否前面有*，而不是在读取*的时候查看是否后面有/
+  // 因为通常人们会在注释中添加大量的*
+
   // The first character we get with newlines and trigraphs skipped to handle
   // the degenerate /*/ case below correctly if the * has an escaped newline
   // after it.
   unsigned CharSize;
   unsigned char C = getCharAndSize(CurPtr, CharSize);
   CurPtr += CharSize;
+  // 如果当前字符是\0 而且 当前位置越过文件末尾
+  // 说明注释没有得到关闭
   if (C == 0 && CurPtr == BufferEnd+1) {
     if (!isLexingRawMode())
       Diag(BufferPtr, diag::err_unterminated_block_comment);
@@ -2562,6 +2650,8 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr,
 
     // KeepWhitespaceMode should return this broken comment as a token.  Since
     // it isn't a well formed comment, just return it as an 'unknown' token.
+    // 如果 ExtendedTokenMode==2 , 所以字符都会形成token，虽然是不正确的comment
+    // token
     if (isKeepWhitespaceMode()) {
       FormTokenWithChars(Result, CurPtr, tok::unknown);
       return true;
@@ -2573,25 +2663,33 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr,
 
   // Check to see if the first character after the '/*' is another /.  If so,
   // then this slash does not end the block comment, it is part of it.
+  // /*后的第一个/不会结束注释
   if (C == '/')
     C = *CurPtr++;
 
+  // 寻找 '/' ， 当找到正确的注释结束时退出
   while (true) {
     // Skip over all non-interesting characters until we find end of buffer or a
     // (probably ending) '/' character.
+    // 优化方案是：使用SIMD指令，一次比较多个字节
+    // 如果剩余字符多于24个，才进行SIMD
     if (CurPtr + 24 < BufferEnd &&
         // If there is a code-completion point avoid the fast scan because it
         // doesn't check for '\0'.
         !(PP && PP->getCodeCompletionFileLoc() == FileLoc)) {
       // While not aligned to a 16-byte boundary.
+      // 先对齐
       while (C != '/' && ((intptr_t)CurPtr & 0x0F) != 0)
         C = *CurPtr++;
 
       if (C == '/') goto FoundSlash;
 
+     // SSE2(Streaming SIMD Extensions 2，Intel官方称为SIMD 流技术扩展
+     // 支持X86
 #ifdef __SSE2__
       __m128i Slashes = _mm_set1_epi8('/');
       while (CurPtr+16 <= BufferEnd) {
+        // 每次可以比较16个字节，16*8个Bit
         int cmp = _mm_movemask_epi8(_mm_cmpeq_epi8(*(const __m128i*)CurPtr,
                                     Slashes));
         if (cmp != 0) {
@@ -2603,6 +2701,8 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr,
         }
         CurPtr += 16;
       }
+      // AltiVec技术是摩托罗拉PowerPC RISC处理器体系结构的向量并行处理技术
+      // 支持PowerPC
 #elif __ALTIVEC__
       __vector unsigned char Slashes = {
         '/', '/', '/', '/',  '/', '/', '/', '/',
@@ -2626,15 +2726,20 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr,
       C = *CurPtr++;
     }
 
+    // 剩下的字符只能逐个比较
     // Loop to scan the remainder.
     while (C != '/' && C != '\0')
       C = *CurPtr++;
 
+    // 终于找到 /
     if (C == '/') {
   FoundSlash:
+      // CurPtr 当前指向 / 下一个字符
+      // 最普通的 * + / 来结束注释
       if (CurPtr[-2] == '*')  // We found the final */.  We're done!
         break;
 
+      // 也可以是 * + 转义换行 + / 来结束注释
       if ((CurPtr[-2] == '\n' || CurPtr[-2] == '\r')) {
         if (isEndOfBlockCommentWithEscapedNewLine(CurPtr-2, this)) {
           // We found the final */, though it had an escaped newline between the
@@ -2642,6 +2747,9 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr,
           break;
         }
       }
+
+      // 如果 / 下个字符是* ， 即块注释里面嵌套了 /* , 报错
+      // 如果嵌套的是 /*/ 不报错。
       if (CurPtr[0] == '*' && CurPtr[1] != '/') {
         // If this is a /* inside of the comment, emit a warning.  Don't do this
         // if this is a /*/, which will end the comment.  This misses cases with
@@ -2649,7 +2757,7 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr,
         if (!isLexingRawMode())
           Diag(CurPtr-1, diag::warn_nested_block_comment);
       }
-    } else if (C == 0 && CurPtr == BufferEnd+1) {
+    } else if (C == 0 && CurPtr == BufferEnd+1) {// 直到文件末尾也没有找到 /
       if (!isLexingRawMode())
         Diag(BufferPtr, diag::err_unterminated_block_comment);
       // Note: the user probably forgot a */.  We could continue immediately
@@ -2674,6 +2782,7 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr,
 
     C = *CurPtr++;
   }
+  // 确认注释已经正确结束了
 
   // Notify comment handlers about the comment unless we're in a #if 0 block.
   if (PP && !isLexingRawMode() &&
@@ -3197,11 +3306,19 @@ void Lexer::PropagateLineStartLeadingSpaceInfo(Token &Result) {
   // Note that this doesn't affect IsAtPhysicalStartOfLine.
 }
 
+/**
+ * @brief 吐出一个Token，保存到Result
+ * @param Result 
+ * @return true 
+ * @return false 
+ */
 bool Lexer::Lex(Token &Result) {
   // Start a new token.
+  // 标志位清零
   Result.startToken();
 
   // Set up misc whitespace flags for LexTokenInternal.
+  // 虽然Result还不知道是什么Token，但是标志位通过上一次的Lex()已经知道了，可以直接设置
   if (IsAtStartOfLine) {
     Result.setFlag(Token::StartOfLine);
     IsAtStartOfLine = false;
@@ -3221,6 +3338,7 @@ bool Lexer::Lex(Token &Result) {
   IsAtPhysicalStartOfLine = false;
   bool isRawLex = isLexingRawMode();
   (void) isRawLex;
+  // 转发给LexTokenInternal，获得下一个Token，同时获得下下个Token的标志
   bool returnedToken = LexTokenInternal(Result, atPhysicalStartOfLine);
   // (After the LexTokenInternal call, the lexer might be destroyed.)
   assert((returnedToken || !isRawLex) && "Raw lex must succeed");
@@ -3239,9 +3357,13 @@ LexNextToken:
   Result.setIdentifierInfo(nullptr);
 
   // CurPtr - Cache BufferPtr in an automatic variable.
+  // BufferPtr 指向Result的开始
+  // CurPtr 不断向后移动，直到指向Result的末尾
+  // 指向当前处理的字符
   const char *CurPtr = BufferPtr;
 
   // Small amounts of horizontal whitespace is very common between tokens.
+  // 忽略垂直空白符：包括普通空格，水平制表符\t,垂直制表符\v,换页符\f
   if (isHorizontalWhitespace(*CurPtr)) {
     do {
       ++CurPtr;
@@ -3250,6 +3372,7 @@ LexNextToken:
     // If we are keeping whitespace and other tokens, just return what we just
     // skipped.  The next lexer invocation will return the token after the
     // whitespace.
+    // 如果要保留空白符号
     if (isKeepWhitespaceMode()) {
       FormTokenWithChars(Result, CurPtr, tok::unknown);
       // FIXME: The next token will not have LeadingSpace set.
@@ -3263,19 +3386,25 @@ LexNextToken:
   unsigned SizeTmp, SizeTmp2;   // Temporaries for use in cases below.
 
   // Read a character, advancing over it.
+  // 读取CurPtr指向的字符，并移动读取指针CurPtr。要注意trigraph、\ 的情况
   char Char = getAndAdvanceChar(CurPtr, Result);
   tok::TokenKind Kind;
 
   if (!isVerticalWhitespace(Char))
     NewLinePtr = nullptr;
 
+  // 根据读到的字符决定返回的Token
   switch (Char) {
   case 0:  // Null.
     // Found end of file?
+    // 找到文件的末尾了
     if (CurPtr-1 == BufferEnd)
       return LexEndOfFile(Result, CurPtr-1);
 
+    // 在文件的中间有 \0
+
     // Check if we are performing code completion.
+    // 如果在当前字符(\0)的位置我们需要进行代码补全，返回特殊Token
     if (isCodeCompletionPoint(CurPtr-1)) {
       // Return the code-completion token.
       Result.startToken();
@@ -3295,6 +3424,7 @@ LexNextToken:
 
   case 26:  // DOS & CP/M EOF: "^Z".
     // If we're in Microsoft extensions mode, treat this as end of file.
+    // 在微软拓展模式中，^Z也表示文件末尾
     if (LangOpts.MicrosoftExt) {
       if (!isLexingRawMode())
         Diag(CurPtr-1, diag::ext_ctrl_z_eof_microsoft);
@@ -3312,6 +3442,7 @@ LexNextToken:
   case '\n':
     // If we are inside a preprocessor directive and we see the end of line,
     // we know we are done with the directive, so return an EOD token.
+    // 如果当前是在预处理指令中，换行就代表预处理指令结束了，返回EOD。
     if (ParsingPreprocessorDirective) {
       // Done parsing the "line".
       ParsingPreprocessorDirective = false;
@@ -3347,6 +3478,8 @@ LexNextToken:
     if (SkipWhitespace(Result, CurPtr, TokAtPhysicalStartOfLine))
       return true; // KeepWhitespaceMode
 
+  // 专门处理没有语义的token，比如comment，whitespace
+  // 
   SkipIgnoredUnits:
     CurPtr = BufferPtr;
 

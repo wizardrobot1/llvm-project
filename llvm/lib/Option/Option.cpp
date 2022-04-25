@@ -110,15 +110,18 @@ Arg *Option::acceptInternal(const ArgList &Args, StringRef Spelling,
                             unsigned &Index) const {
   size_t ArgSize = Spelling.size();
   switch (getKind()) {
+  // FlagClass 类型的选项， 没有InputValue
   case FlagClass: {
     if (ArgSize != strlen(Args.getArgString(Index)))
       return nullptr;
     return new Arg(*this, Spelling, Index++);
   }
+  // JoinedClass 类型的选项， 选项的InputValue就和选项是连着的(eg. -lmath)
   case JoinedClass: {
     const char *Value = Args.getArgString(Index) + ArgSize;
     return new Arg(*this, Spelling, Index++, Value);
   }
+  // CommaJoinedClass 类型的选项， 选项的InputValue通过, 分隔的
   case CommaJoinedClass: {
     // Always matches.
     const char *Str = Args.getArgString(Index) + ArgSize;
@@ -134,6 +137,7 @@ Arg *Option::acceptInternal(const ArgList &Args, StringRef Spelling,
           char *Value = new char[Str - Prev + 1];
           memcpy(Value, Prev, Str - Prev);
           Value[Str - Prev] = '\0';
+          // 把每一个InputValue保存到A.Values里面
           A->getValues().push_back(Value);
         }
 
@@ -232,16 +236,22 @@ Arg *Option::acceptInternal(const ArgList &Args, StringRef Spelling,
 
 Arg *Option::accept(const ArgList &Args, StringRef CurArg,
                     bool GroupedShortOption, unsigned &Index) const {
+  // 转发给acceptInternal 来生成Arg
+  // acceptInternal 中根据Option的Kind来合成Arg
+  // 比如有的Option参数是用逗号连接的,有的Option参数是直接连接在Option后面的
+  // 我们需要把这些参数取出来 ，保存到 Arg.Values(SmallVector<const char *, 2>)里面
   std::unique_ptr<Arg> A(GroupedShortOption && getKind() == FlagClass
                              ? new Arg(*this, CurArg, Index)
                              : acceptInternal(Args, CurArg, Index));
   if (!A)
     return nullptr;
 
+  // 判断是否是别名
   const Option &UnaliasedOption = getUnaliasedOption();
   if (getID() == UnaliasedOption.getID())
     return A.release();
 
+  // 处理别名
   // "A" is an alias for a different flag. For most clients it's more convenient
   // if this function returns unaliased Args, so create an unaliased arg for
   // returning.
